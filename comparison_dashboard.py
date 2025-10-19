@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import math
@@ -14,7 +14,6 @@ import streamlit as st
 from PIL import Image
 
 from om_extractor import (
-    DEFAULT_MAX_PAGES,
     call_azure_extraction,
     images_to_base64,
     pdf_to_images,
@@ -996,8 +995,6 @@ def main() -> None:
             format_func=lambda p: "Use uploaded file" if p is None else p.name,
         )
         uploaded_pdf = st.file_uploader("Or upload OM PDF", type=["pdf"])
-        max_pages = st.slider("Pages to send to model", min_value=1, max_value=20, value=min(DEFAULT_MAX_PAGES, 12))
-
         st.header("Comparison Filters")
         apply_filters = st.checkbox(
             "Apply filters",
@@ -1039,7 +1036,7 @@ def main() -> None:
             if pdf_path:
                 try:
                     with st.spinner("Extracting data from OM..."):
-                        images = pdf_to_images(pdf_path, max_pages=max_pages)
+                        images = pdf_to_images(pdf_path)
                         base64_images = images_to_base64(images)
                         extraction = call_azure_extraction(base64_images)
                     st.session_state["om_extraction"] = {

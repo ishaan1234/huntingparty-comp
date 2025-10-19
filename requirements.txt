@@ -1,9 +1,10 @@
 requests
 pdf2image
 Pillow
-streamlit
+streamlit==1.50.0
 pandas
 python-dotenv
 
 numpy
 pgeocode
+

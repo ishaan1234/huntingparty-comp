@@ -1,0 +1,9 @@
+requests
+pdf2image
+Pillow
+streamlit
+pandas
+python-dotenv
+
+numpy
+pgeocode

@@ -1,10 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import io
 import json
 import os
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 from pdf2image import convert_from_path
@@ -150,7 +150,9 @@ Extract the following information from the property documents:
 - Cap rate might be explicitly stated or you may need to calculate it from NOI and price
 - Be flexible with field names - they vary significantly across OMs"""
 
-def pdf_to_images(pdf_path: str, *, max_pages: int = DEFAULT_MAX_PAGES, dpi: int = DEFAULT_DPI) -> List[Image.Image]:
+def pdf_to_images(pdf_path: str, *, max_pages: Optional[int] = None, dpi: int = DEFAULT_DPI) -> List[Image.Image]:
+    if max_pages is None:
+        return convert_from_path(pdf_path, dpi=dpi)
     return convert_from_path(pdf_path, dpi=dpi, first_page=1, last_page=max_pages)
 
 
@@ -214,7 +216,7 @@ def call_azure_extraction(
 def extract_data_from_pdf(
     pdf_path: str,
     *,
-    max_pages: int = DEFAULT_MAX_PAGES,
+    max_pages: Optional[int] = None,
     dpi: int = DEFAULT_DPI,
     max_tokens: int = 4000,
     temperature: float = 0.1,

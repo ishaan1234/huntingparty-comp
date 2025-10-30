@@ -4,6 +4,7 @@ import json
 import math
 import re
 import tempfile
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,6 +40,17 @@ BEDROOM_MAP = [
     ("3 Bed", "3_bed", 3),
     ("4 Bed", "4_bed", 4),
 ]
+
+TAB_LABELS = [
+    "Overview",
+    "Rent vs Market",
+    "Financials",
+    "Spatial Pricing",
+    "Comps",
+    "Raw JSON",
+    "PDF Preview",
+]
+ACTIVE_TAB_KEY = "comparison_active_tab"
 
 
 def to_float(value: Any) -> Optional[float]:
@@ -134,6 +146,10 @@ def pct_diff(value: Optional[float], reference: Optional[float]) -> Optional[flo
     if reference == 0:
         return None
     return (value - reference) / reference
+
+
+def remember_tab(tab_name: str) -> None:
+    st.session_state[ACTIVE_TAB_KEY] = tab_name
 
 
 FORMATTERS = {
@@ -959,21 +975,50 @@ def run_weighted_price_model(
     if "distance_miles" not in df.columns:
         df = add_distance_column(df, origin, "latitude", "longitude")
 
-    df = df[df["distance_miles"].notna()]
+    source_total = len(df)
+    distance_mask = df["distance_miles"].notna()
+    coords_total = int(distance_mask.sum())
+    missing_coords = source_total - coords_total
+
+    df = df[distance_mask]
     if df.empty:
-        return {"error": "CREXi comps are missing coordinates; cannot compute distances."}
+        return {
+            "error": "CREXi comps are missing coordinates; cannot compute distances.",
+            "source_comps": source_total,
+            "comps_with_coordinates": coords_total,
+            "missing_coordinates": missing_coords,
+        }
 
     df = df[df["distance_miles"] <= max_distance]
     if df.empty:
-        return {"error": "No comps within the selected distance threshold."}
+        return {
+            "error": "No comps within the selected distance threshold.",
+            "source_comps": source_total,
+            "comps_with_coordinates": coords_total,
+            "missing_coordinates": missing_coords,
+            "within_radius": 0,
+        }
 
     df_candidates = df.copy()
+    within_radius = len(df_candidates)
 
     if "asking_price" not in df.columns:
-        return {"error": "CREXi data is missing asking prices."}
+        return {
+            "error": "CREXi data is missing asking prices.",
+            "source_comps": source_total,
+            "comps_with_coordinates": coords_total,
+            "missing_coordinates": missing_coords,
+            "within_radius": within_radius,
+        }
     df_model = df[df["asking_price"].notna()].copy()
     if df_model.empty:
-        return {"error": "No comps with asking price data inside the distance threshold."}
+        return {
+            "error": "No comps with asking price data inside the distance threshold.",
+            "source_comps": source_total,
+            "comps_with_coordinates": coords_total,
+            "missing_coordinates": missing_coords,
+            "within_radius": within_radius,
+        }
 
     feature_defs = {
         "units": {
@@ -1149,6 +1194,10 @@ def run_weighted_price_model(
         "weighted_rmse": weighted_rmse,
         "effective_comps": len(df_model),
         "candidate_comps": len(df_candidates),
+        "source_comps": source_total,
+        "comps_with_coordinates": coords_total,
+        "missing_coordinates": missing_coords,
+        "within_radius": within_radius,
         "features_used": [meta["label"] for meta in usable_features],
         "om_features": om_feature_snapshot,
         "feature_metadata": usable_features,
@@ -1285,6 +1334,10 @@ def main() -> None:
 
     origin = resolve_property_coordinates(profile, [crexi_df, realtor_sales_df, realtor_rent_df])
 
+    crexi_distance_only = crexi_df.copy() if crexi_df is not None else pd.DataFrame()
+    if not crexi_distance_only.empty:
+        crexi_distance_only = add_distance_column(crexi_distance_only, origin, "latitude", "longitude")
+
     if apply_filters:
         crexi_filtered = apply_crexi_filters(crexi_df, profile, filters, origin)
         realtor_sales_filtered = filter_realtor_sales(realtor_sales_df, profile, filters, origin)
@@ -1344,16 +1397,12 @@ def main() -> None:
 
     oz_share = compute_opportunity_zone_share(crexi_filtered)
 
+    if ACTIVE_TAB_KEY not in st.session_state:
+        st.session_state[ACTIVE_TAB_KEY] = TAB_LABELS[0]
+
     overview_tab, rent_tab, financial_tab, spatial_tab, comps_tab, raw_tab, pdf_tab = st.tabs(
-        [
-            "Overview",
-            "Rent vs Market",
-            "Financials",
-            "Spatial Pricing",
-            "Comps",
-            "Raw JSON",
-            "PDF Preview",
-        ]
+        TAB_LABELS,
+        default=st.session_state.get(ACTIVE_TAB_KEY, TAB_LABELS[0]),
     )
 
     with overview_tab:
@@ -1455,9 +1504,10 @@ def main() -> None:
 
     with spatial_tab:
         st.subheader("Spatial Pricing Model")
-        if crexi_filtered.empty:
+        if crexi_distance_only.empty:
             st.info("CREXi comps are required to run the spatial model.")
         else:
+            remember_spatial_tab = partial(remember_tab, "Spatial Pricing")
             controls = st.columns(2)
             default_radius = max(5, min(int(max_distance), 50))
             spatial_radius = controls[0].slider(
@@ -1467,6 +1517,7 @@ def main() -> None:
                 value=default_radius,
                 step=5,
                 key="spatial_radius_miles",
+                on_change=remember_spatial_tab,
             )
             default_bandwidth = max(1.0, min(float(max_distance), 10.0))
             spatial_bandwidth = controls[1].slider(
@@ -1476,6 +1527,7 @@ def main() -> None:
                 value=default_bandwidth,
                 step=0.5,
                 key="spatial_bandwidth_miles",
+                on_change=remember_spatial_tab,
             )
             if spatial_bandwidth > spatial_radius:
                 spatial_bandwidth = float(spatial_radius)
@@ -1497,6 +1549,7 @@ def main() -> None:
                     default=default_labels,
                     help="Choose which OM metrics the spatial regression should match.",
                     key="spatial_feature_labels",
+                    on_change=remember_spatial_tab,
                 )
                 selected_keys = [
                     item["key"] for item in available_features if item["label"] in selected_labels
@@ -1507,7 +1560,7 @@ def main() -> None:
                 else:
                     model_result = run_weighted_price_model(
                         profile,
-                        crexi_filtered,
+                        crexi_distance_only,
                         origin,
                         bandwidth_miles=float(spatial_bandwidth),
                         max_distance=float(spatial_radius),
@@ -1516,6 +1569,21 @@ def main() -> None:
 
                     if "error" in model_result:
                         st.warning(model_result["error"])
+                        detail_parts: List[str] = []
+                        source_total = model_result.get("source_comps")
+                        coords_total = model_result.get("comps_with_coordinates")
+                        missing_coords = model_result.get("missing_coordinates")
+                        within_radius = model_result.get("within_radius")
+                        if source_total is not None:
+                            detail_parts.append(f"CREXi comps: {int(source_total):,}")
+                        if coords_total is not None:
+                            detail_parts.append(f"With coordinates: {int(coords_total):,}")
+                        if missing_coords:
+                            detail_parts.append(f"Missing coordinates: {int(missing_coords):,}")
+                        if within_radius is not None:
+                            detail_parts.append(f"Within radius: {int(within_radius):,}")
+                        if detail_parts:
+                            st.caption(" | ".join(detail_parts))
                     else:
                         predicted_price = model_result["prediction"]
                         om_price = profile.get("asking_price")
@@ -1536,16 +1604,27 @@ def main() -> None:
                             format_money(weighted_rmse, 0) if weighted_rmse is not None else "-"
                         )
                         candidate_total = model_result.get("candidate_comps")
+                        source_total = model_result.get("source_comps")
+                        coords_total = model_result.get("comps_with_coordinates")
+                        missing_coords = model_result.get("missing_coordinates")
+                        caption_main: str
                         if candidate_total is not None:
-                            caption_text = (
+                            caption_main = (
                                 f"Comps used in regression: {model_result['effective_comps']:,} of "
-                                f"{candidate_total:,} within radius - Weighted RMSE: {rmse_display}"
+                                f"{candidate_total:,} within radius"
                             )
                         else:
-                            caption_text = (
-                                f"Comps used in regression: {model_result['effective_comps']:,} - "
-                                f"Weighted RMSE: {rmse_display}"
-                            )
+                            caption_main = f"Comps used in regression: {model_result['effective_comps']:,}"
+                        coord_notes: List[str] = []
+                        if coords_total is not None:
+                            coord_notes.append(f"{int(coords_total):,} with coordinates")
+                        if missing_coords:
+                            coord_notes.append(f"{int(missing_coords):,} missing coordinates")
+                        if source_total is not None:
+                            coord_notes.append(f"{int(source_total):,} total CREXi comps")
+                        if coord_notes:
+                            caption_main += " (" + ", ".join(coord_notes) + ")"
+                        caption_text = f"{caption_main} - Weighted RMSE: {rmse_display}"
                         st.caption(caption_text)
                         if model_result.get("features_used"):
                             st.caption(
@@ -1827,9 +1906,20 @@ def main() -> None:
         if not images:
             st.info("PDF preview unavailable.")
         else:
-            page = st.slider("Page", min_value=1, max_value=len(images), value=1)
+            total_pages = len(images)
+            if total_pages <= 1:
+                page = 1
+            else:
+                page = st.slider(
+                    "Page",
+                    min_value=1,
+                    max_value=total_pages,
+                    value=1,
+                    key="pdf_preview_page",
+                    on_change=partial(remember_tab, "PDF Preview"),
+                )
             st.image(images[page - 1], use_column_width=True)
-            st.caption(f"Showing page {page} of {len(images)}")
+            st.caption(f"Showing page {page} of {total_pages}")
 
 
 if __name__ == "__main__":
